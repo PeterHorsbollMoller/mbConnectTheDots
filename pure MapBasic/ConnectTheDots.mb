@@ -1,0 +1,326 @@
+'*****************************************************************************
+'	Copyright (c) 1995, MAPINFO CORPORATION
+'	All rights reserved.
+'	Confidential Property of MAPINFO CORPORATION
+'
+' $Workfile:	ConnectTheDots.mb	$
+' $Revision:	1.0	$
+' $Author:	DRESSEL	$
+' $Date:		21 September 1999 16:14:56	$
+'
+' Module Description:
+'
+' Convert selected points into a region.
+'
+' Revision History:
+'
+'	Rev 1.0	21 September 1999 16:14:56	DRESSEL
+' 		Initial revision.
+'	Rev 2.0	5 October 2017				HORSBØLL MØLLER
+'		Porting to ribbon
+'*****************************************************************************
+Include "MapBasic.def"
+
+Include "IMapInfoPro.def"
+Include "Enums.def"
+
+Declare Sub Main
+Declare Sub ConnectTheDots
+Declare Sub About
+Declare Sub GoodBye
+
+Declare Sub AddIn_About
+Declare Function AddIn_Name() As String
+Declare Function AddIn_Description() As String
+Declare Function AddIn_Version() As String
+Declare Function AddIn_ImageUri() As String
+
+Declare Sub EndHandler
+
+Define TYPEPOLYGON 1
+Define TYPEPOLYLINE 2
+
+Global iObjectType As Integer
+Global pPen As Pen
+Global bBrush As Brush
+Global lDeletePoints As Logical
+
+'IMapInfoPro:
+Dim mtsMapInfoApplication as This
+'The Ribbon:
+Dim mtsRibbon as This
+'The Tab Collection of the Ribbon:
+Dim mtsRibbonTabColl as This
+'The Control Collection of the group:
+Dim mtsGroupControlColl As This
+'The Button we are adding:
+Dim mtsBtn As This
+
+
+'*****************************************************************************
+Sub Main
+
+	OnError Goto HandleError
+
+	'We need this to get resources, like icons, from .NET assemblies
+	Call RegisterUriParser(New_GenericUriParser(1), "pack", -1)
+
+	'Get the IMapInfoPro instance
+	mtsMapInfoApplication = SystemInfo(SYS_INFO_IMAPINFOAPPLICATION)
+
+	'Get the Ribbon from the MapInfo Pro instance
+	mtsRibbon = GetRibbon(mtsMapInfoApplication)
+
+	'Get the Ribbon Tab Collection from the Ribbon instance
+	mtsRibbonTabColl = GetTabsColl(mtsRibbon)
+
+	'Get the Ribbon Tab named "TabSpatial" from the Ribbon Tab Collection
+	Dim tsRibbonTab As This
+	tsRibbonTab =GetRbnTabCollItemStr(mtsRibbonTabColl, "TabSpatial")
+	Print "Ribbon Caption: " & GetRbnTabCaption(tsRibbonTab)
+
+	'Get the ribbon group collection.
+	Dim tsRibbonGroupColl As This
+	tsRibbonGroupColl = GetRbnTabGrps(tsRibbonTab)
+	Print "Num Tab Groups: " & GetRbnCtrlGrpCollCount(tsRibbonGroupColl)
+
+	'Get the ribbon group called " " from the ribbon group collection
+	Dim tsRibbonGroup As This
+	tsRibbonGroup = GetRbnCtrlGrpCollItemStr(tsRibbonGroupColl, "SpatialCreateBar")
+	Print "Ribbon Group Caption: " & GetRbnCtrlGrpCaption(tsRibbonGroup)
+
+	'Get Group controls collection
+	mtsGroupControlColl = GetRbnCtrlGrpCtrls(tsRibbonGroup)
+	Print "Num Group Controls: " & GetMICtrlCollCount(mtsGroupControlColl)
+
+	'Now add a button to the group's controls collection with a name
+	', caption, and enumerated ControlType
+	mtsBtn = MICtrlCollAddStrStrInt(mtsGroupControlColl, "btnConnectDots", "Connect The Dots", ControlType_Button)
+	Print "Num Group Controls (after adding): " & GetMICtrlCollCount(mtsGroupControlColl)
+
+	'Set command to the button
+	call SetRbnBtnCtrlCallingHandler(mtsBtn, "ConnectTheDots")
+
+	'Create & Set the button tooltip
+	Dim tsToolTip As This
+	tsToolTip = New_MapInfoRibbonToolTip()
+	Call SetMIRbnToolTipToolTipDescription(tsToolTip, "Connect The Dots")
+	Call SetMIRbnToolTipToolTipText(tsToolTip, "Creates a polygon or polyline from the points selected")
+	Call SetMIRbnToolTipToolTipDisabledText(tsToolTip, "Make sure to select records from a layer")
+	Call SetRbnBtnCtrlToolTip(mtsBtn, tsToolTip)
+
+	'Set the button icon
+	Call SetRbnBtnCtrlSmallIcon(mtsBtn, New_Uri("pack://application:,,,/MapInfo.StyleResources;component/Images/Spatial/segmenting_16x16.png", 0))
+	Call SetRbnBtnCtrlLargeIcon(mtsBtn, New_Uri("pack://application:,,,/MapInfo.StyleResources;component/Images/Spatial/segmenting_32x32.png", 0))
+	Call SetRbnBtnCtrlIsLarge(mtsBtn, TRUE)
+
+'	gsAppDescription	= "Connect the Dots"
+'	gsAppFilename		= "ConnectTheDots.mbx"
+
+'	Create Menu "&Connect the Dots" As
+'		"&Connect the Dots..."	Calling ConnectTheDots,
+'		"(-",
+'		"&About	Connect the Dots... "	Calling About,
+'		"E&xit Connect the Dots" Calling Goodbye
+
+'	If SystemInfo(SYS_INFO_MIVERSION) >= 450 Then
+'		Call set_tools_menu("&Connect the Dots")
+'	Else
+'		Create Menu "&Tools" As
+'			"&Connect the Dots" As "&Connect the Dots"
+'		Alter Menu Bar Add "&Tools"
+'	End If
+
+	'**Adding a single menu item to the Tools Context menu
+	Alter Menu ID 4 Add
+		"&Connect the Dots..."	Calling ConnectTheDots
+
+	iObjectType = TYPEPOLYGON
+	pPen = MakePen(1, 2, BLACK)
+	bBrush = MakeBrush(2, RED, WHITE)
+	lDeletePoints = FALSE
+
+	Exit Sub
+HandleError:
+	Note "Main: " + Error$()
+	Resume Next
+
+End Sub
+
+'*****************************************************************************
+Sub ConnectTheDots
+
+OnError Goto HandleError
+
+Dim oObject As Object
+Dim sTableName, sCmd As String
+Dim iNodes As Integer
+
+	If SelectionInfo(SEL_INFO_NROWS) > 0 Then
+		sTableName = SelectionInfo(SEL_INFO_TABLENAME)
+		If TableInfo(sTableName, TAB_INFO_MAPPABLE) Then
+			If Not TableInfo(sTableName, TAB_INFO_READONLY) Then
+
+				Dialog
+					Title "Connect the Dots"
+				Control StaticText
+					Title "Create a:"
+					Position 10, 10
+				Control RadioGroup
+					Title "Poly&gon;Poly&line"
+					Value iObjectType
+					Into iObjectType
+					Position 45, 10
+				Control StaticText
+					Title "style with:"
+					Position 10, 40
+				Control PenPicker
+					Value pPen
+					Into pPen
+					Position 45, 40
+				Control StaticText
+					Title "or"
+					Position 68, 40
+				Control BrushPicker
+					Value bBrush
+					Into bBrush
+					Position 78, 40
+				Control CheckBox
+					Title "&Delete points when done"
+					Value lDeletePoints
+					Into lDeletePoints
+					Position 10, 70
+				Control OKButton Title	"&OK"
+				Control CancelButton Title	"&Cancel"
+
+				If CommandInfo(CMD_INFO_DLG_OK) Then
+
+					sCmd = "Set " + TableInfo(sTableName, TAB_INFO_COORDSYS_CLAUSE)
+					Run Command sCmd
+
+					Select * From Selection Into ~work
+
+					If iObjectType = TYPEPOLYGON Then
+						Create Region Into Variable oObject 0 Pen pPen Brush bBrush
+					Else
+						Create Pline Into Variable oObject 0 Pen pPen
+					End If
+
+					iNodes = 0
+
+					Fetch First From ~work
+					Do While Not EOT(~work)
+						If Str$(~work.obj) = "Point" Then
+							Alter Object oObject Node Add (CentroidX(~work.obj), CentroidY(~work.obj))
+							iNodes = iNodes + 1
+						End If
+						Fetch Next From ~work
+					Loop
+
+					If lDeletePoints Then
+						Delete From ~work
+					End If
+
+					Close Table ~work
+
+					If iNodes > 0 Then
+						Insert Into sTableName (Object) Values (oObject)
+					Else
+						Note "No points found in selection."
+					End If
+
+				End If
+			Else
+				Note "Selected points are in a read-only table. Make table editable and try again."
+			End If
+		Else
+			Note "Selected records are in a non-mapable table. Make tabale mapable and try again."
+		End If
+	Else
+		Note "Select some points and try again."
+	End If
+
+	Exit Sub
+HandleError:
+	Note "ConnectTheDots: " + Error$()
+	Resume Next
+
+End Sub
+
+'*****************************************************************************
+Sub About
+
+OnError Goto HandleError
+
+	Dialog
+		 Title "About Connect the Dots Version 1.0"
+		 Control StaticText
+				Title "Creates a polygon or polyline from the points selected" Position 10, 10
+		 Control StaticText
+				Title "in the order they appear in the source table. Inserts" Position 10, 20
+		 Control StaticText
+				Title "new object into source table. Ignores non-point and" Position 10, 30
+		 Control StaticText
+				Title "deleted objects. Optionally deletes source objects." Position 10, 40
+		 Control StaticText
+				Title "" Position 10, 50
+'		 Control Button Title "&Auto-Load..." Calling HandleInstallation Position 45, 100 Width 45
+		 Control OKButton Title	"&OK" Position 95, 100 Width 45
+
+	Exit Sub
+HandleError:
+	Note "About: " + Error$()
+	Resume Next
+
+End Sub
+
+'*****************************************************************************
+Sub EndHandler
+
+Dim bRemoved As Logical
+
+OnError Goto HandleError
+
+	bRemoved	= MICtrlCollRemove(mtsGroupControlColl, mtsBtn)
+	mtsBtn	= NULL_PTR
+
+	Exit Sub
+HandleError:
+	Note "EndHandler: " + Error$()
+	Resume Next
+
+End Sub
+
+'*****************************************************************************
+Sub GoodBye
+
+OnError Goto HandleError
+
+	End Program
+
+	Exit Sub
+HandleError:
+	Note "GoodBye: " + Error$()
+	Resume Next
+
+End Sub
+
+Sub AddIn_About
+	Call About
+End Sub
+Function AddIn_Name() As String
+	AddIn_Name	= "Connect The Dots"
+End Function
+Function AddIn_Description() As String
+	AddIn_Description = "Creates a polygon or polyline from the points selected in the layer the points are selected from."
+End Function
+Function AddIn_Version() As String
+	AddIn_Version	= "2.0"
+End Function
+Function AddIn_ImageUri() As String
+	AddIn_ImageUri	= "pack://application:,,,/MapInfo.StyleResources;component/Images/Spatial/segmenting_16x16.png"
+End Function
+
+' End of File
+
+

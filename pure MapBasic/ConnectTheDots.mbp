@@ -1,0 +1,5 @@
+[Link] 
+Application=ConnectTheDots.mbx 
+Module=ConnectTheDots.mbo
+Module=C:\Program Files (x86)\MapInfo\MapBasic105\Samples\MAPBASIC\Lib\auto_lib.mbo
+
